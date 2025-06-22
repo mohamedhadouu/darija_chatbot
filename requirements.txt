@@ -1,0 +1,61 @@
+# Core Flask & Web dependencies
+bcrypt>=4.0.0
+flask>=2.3.0
+flask-cors>=5.0.0
+requests>=2.31.0
+
+# Data processing & utilities
+numpy>=1.24.0
+pandas>=2.0.0
+Pillow>=10.0.0
+openpyxl>=3.1.0
+python-docx>=0.8.11
+python-pptx>=0.6.21
+PyPDF2>=3.0.0
+markdown>=3.4.0
+fpdf2>=2.7.0
+pymongo>=4.5.0
+watchdog>=3.0.0
+
+# AI/ML & LLM dependencies
+torch>=2.0.0
+transformers>=4.30.0
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.0
+
+# LlamaIndex ecosystem
+llama-index>=0.8.0
+llama-index-llms-openai>=0.1.0
+llama-index-embeddings-openai>=0.1.0
+llama-index-readers-file>=0.1.0
+
+# OpenAI integration
+openai>=1.0.0
+tiktoken>=0.5.0
+
+# Audio processing
+speechrecognition>=3.10.0
+pyttsx3>=2.90
+pydub>=0.25.1
+pygame>=2.5.0
+gtts>=2.3.0
+
+# LiveKit for real-time audio
+livekit>=1.0.7,<2.0.0
+livekit-agents>=1.0.22
+livekit-plugins-openai
+livekit-plugins-deepgram
+livekit-plugins-noise-cancellation>=0.2
+
+# Environment & configuration
+python-dotenv>=1.0.0
+
+# Web interface
+gradio>=3.40.0
+
+# Optional dependencies
+opencv-python>=4.8.0
+moviepy>=1.0.3
+pytesseract>=0.3.10
+pyaudio>=0.2.11
+openai-whisper>=20231117
