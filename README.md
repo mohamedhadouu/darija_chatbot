@@ -1,5 +1,5 @@
 
-# 🧠 Assistant Vocal Intelligent en Darija Marocaine pour l'Agriculture 🇲🇦🌾
+# 🧠 Assistant Vocal Intelligent en Darija Marocaine pour l'Agriculture🌾
 
 ## 🎯 Objectif du projet
 
