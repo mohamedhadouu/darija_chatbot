@@ -1,20 +1,13 @@
-import requests
 from fpdf import FPDF
-from datetime import datetime, timedelta
-import random
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Side, PatternFill, Font
-from openpyxl.chart import BarChart, Reference
 import markdown
 import json 
-from difflib import SequenceMatcher
 import re
 from functools import lru_cache
 import openai
 from dotenv import load_dotenv
 import os
 import tiktoken
-
+import time
 load_dotenv()
 
 class LLMResponder:
@@ -43,23 +36,32 @@ class LLMResponder:
         # Instructions pour GPT en darija
         self.SYSTEM_PROMPTS = {
             "darija_arabic": """أنت القطب الرقمي للفلاحة، مساعد ذكي متخصص في المجال الفلاحي المغربي.
-            جاوب بالدارجة المغربية بحروف عربية، كن مهني ومفهوم.
-            جاوب غير من الوثائق بلا ما تزيد.""",
+        جاوب بالدارجة المغربية بحروف عربية، كن مهني ومفهوم.
+        استخدم معرفتك في الفلاحة المغربية والعالمية.""",
             
-            "darija_latin": """Nta Pole Digital D'Agriculture, assistant IA specialist f domaine dyal l fla7a l maghribiya.
-            Jaweb b darija maghribiya b horouf latinia, kun professional o accessible.
-            jawb ghi mn les fichiers li 3ndek matzid walo.""",
-            
-            "french": """Vous êtes le Pôle Digital D'Agriculture, assistant IA spécialisé dans l'agriculture marocaine.
-            Répondez en français de manière professionnelle mais accessible.
-            Utilisez juste les fichier que je te offre et non plus."""
-        }
+                    "darija_latin": """Nta Pole Digital D'Agriculture, assistant IA specialist f domaine dyal l fla7a l maghribiya.
+        Jaweb b darija maghribiya b horouf latinia, kun professional o accessible.
+        lmosta3mel makay3refch francais kaydwi ghi b darija , ktb lih kolchi b darija, jawab dyalk khasso ikon 100% bdarija
+        sta3mel lm3lomat li kan3tiwk bach tktb jawab bayn, walakin mat5lich kalimat bfrancais rdhom b darija howa lowl.
+        Ste3mel l ma3rifa dyalek f fla7a maghribiya .""",
+                    
+                    "french": """Vous êtes le Pôle Digital D'Agriculture, assistant IA spécialisé dans l'agriculture marocaine.
+                Répondez en français de manière professionnelle mais accessible.
+                Utilisez vos connaissances en agriculture marocaine et mondiale."""
+                }
+        
         # System prompt pour la traduction
-        self.TRANSLATION_PROMPT = """Tu es un expert en traduction darija marocaine vers français.
-        Traduis UNIQUEMENT la requête en français standard, sans ajouter d'explications.
-        Concentre-toi sur les termes techniques agricoles et administratifs.
-        Réponds seulement avec la traduction française."""
-       
+        self.TRANSLATION_PROMPT = """Tu es un assistant spécialisé dans la traduction et la reformulation de requêtes en darija vers le français standard, dans un contexte agricole marocain.
+
+            1. Traduis la question en français clair et précis.
+            2. Reformule-la si nécessaire, sans changer ni le sens ni l’intention de l’utilisateur.
+            3. Garde toutes les informations importantes, surtout les termes techniques agricoles ou administratifs.
+
+            Cette question sera utilisée pour interroger une base de données documentaire agricole en français.
+
+            Réponds uniquement par une seule phrase reformulée en français correct. Ne donne aucune explication ni commentaire.
+            ."""
+                
         # Vocabulaire étendu pour la détection de darija
         self.darija_latin_vocab = {
             # Salutations et politesse
@@ -120,8 +122,8 @@ class LLMResponder:
                 
         return False
 
-    def detect_language_advanced(self, query):
-        """Détection avancée de la langue avec support des 3 langues"""
+    """ def detect_language_advanced(self, query):
+    
         query_lower = query.lower().strip()
         
         # Détection de l'arabe
@@ -133,50 +135,120 @@ class LLMResponder:
             return "darija_latin"
             
         # Détection de mots darija en lettres latines
-        darija_latin_count = sum(1 for word in self.darija_latin_vocab if word in query_lower)
-        
+        query_words = query_lower.split()
+        darija_latin_count = sum(1 for word in query_words if word in self.darija_latin_vocab)
+
         # Si plus de 2 mots darija détectés, c'est probablement de la darija
         if darija_latin_count >= 2:
             return "darija_latin"
         
         # Détection de mots darija courants
-        common_darija = ["kifash", "wach", "wash", "bzaf", "chwiya", "dyal", "3la", "mn", "fin"]
+        common_darija = ["kifash", "wach", "wash", "bzaf", "chwiya", "dyal", "3la", "mn", "hiya", "chno", "fin"]
         if any(word in query_lower for word in common_darija):
             return "darija_latin"
         
-        return "french"
+        return "french" 
+ """
+    def detect_language_advanced(self, text):
+        try:
+            prompt = """ f
+            Voici une courte phrase : "{text}"
 
-    """ def translate_query_to_french(self, query, detected_lang):
-        
-        
-        # Si c'est déjà en français, pas besoin de traduire
-        if detected_lang == "french":
-            print(f"[TRANSLATION] Requête déjà en français: {query}")
-            return query
+            Ta tâche :
+            - Réponds uniquement avec l'une des trois options suivantes : "french", "darija_latin", ou "darija_arabic".
+            - Ne donne aucune explication, seulement un mot.
+            - "darija_latin" = darija marocaine écrite en lettres latines (3, 7, 9, etc.)
+            - "darija_arabic" = darija marocaine écrite en alphabet arabe
+            - "french" = français standard """
+            
+
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Tu es un détecteur de langue expert."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                max_tokens=10
+            )
+
+            result = response.choices[0].message.content.strip().lower()
+            if result in ["french", "darija_latin", "darija_arabic"]:
+                return result
+            else:
+                print(f"[WARN] Réponse imprévue GPT : {result}")
+                return "french"  # fallback
+        except Exception as e:
+            print(f"[ERROR GPT Detection] {e}")
+            return "french"
+
+    
+    def translate_query_to_french(self, query):
+        # Si la langue détectée est en darija, on traduit
         
         try:
-            print(f"[TRANSLATION] Traduction de '{query}' ({detected_lang}) vers français...")
-            
+            print(f"[TRANSLATION] Traduction de query  vers français...")
+
             response = self.client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": self.TRANSLATION_PROMPT},
                     {"role": "user", "content": f"Traduis cette requête en français: {query}"}
                 ],
-                temperature=0.1,  # Très bas pour traduction précise
-                max_tokens=200,
+                temperature=0.3,  # Très bas pour traduction précise
+                max_tokens=500,
                 top_p=0.9
             )
-            
-            translated = response.choices[0].message.content.strip()
-            print(f"[TRANSLATION] Résultat: '{translated}'")
-            
-            return translated 
-            
+
+            if response.choices and response.choices[0].message and response.choices[0].message.content:
+                translated = response.choices[0].message.content.strip()
+                print(f"[TRANSLATION] Résultat: '{translated}'")
+                return translated
+            else:
+                print("[TRANSLATION] Réponse invalide, fallback à la requête originale.")
+                return query
+
         except Exception as e:
             print(f"[TRANSLATION] Erreur lors de la traduction: {e}")
-            # Fallback: retourner la requête originale
-            return query """
+            return query
+       
+    def rewrite_response_to_user_language(self, original_response, lang_variant):
+        """Reformule la réponse dans la langue de la requête utilisateur"""
+    
+        if lang_variant == "french":
+            return original_response  # Pas besoin de traduire
+        
+        prompt_map = {
+            "darija_latin": f"""
+        Tu es un assistant marocain.
+        Réécris le texte suivant en darija marocaine écrite en lettres latines.
+        Utilise un ton simple, oral, et adapté à un agriculteur.
+        Texte à reformuler :
+        \"{original_response}\"""",
+
+                "darija_arabic": f"""
+        أعد كتابة النص التالي بالدارجة المغربية بالحروف العربية.
+        استعمل أسلوب بسيط وكأنك كتجاوب مع فلاح.
+        النص:
+        \"{original_response}\""""
+        }
+
+        try:
+            prompt = prompt_map.get(lang_variant) or "Texte manquant"
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Tu es un assistant vocal marocain qui reformule les réponses dans la langue de l'utilisateur."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                top_p=0.9,
+                max_tokens=500
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[ERROR Traduction GPT] {e}")
+        return original_response
 
     def get_greeting_by_language(self, language):
         """Retourne une salutation appropriée selon la langue détectée"""
@@ -199,7 +271,6 @@ class LLMResponder:
 
     def ask_gpt_darija(self, question, detected_lang="darija_latin", retrieved_context=None):
         """Fonction principale pour interroger GPT en darija"""
-        
         # Préparation du système prompt
         system_prompt = self.SYSTEM_PROMPTS.get(detected_lang, self.SYSTEM_PROMPTS["darija_latin"])
         
@@ -212,23 +283,23 @@ class LLMResponder:
         
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-4o",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.3,
-                max_tokens=1500,
+                max_tokens=500,
                 top_p=0.9,
                 frequency_penalty=0.2,
                 presence_penalty=0.2
             )
-            
+
             return response.choices[0].message.content
             
         except Exception as e:
             print(f"Erreur GPT: {e}")
-            return f"Sma7 lia, kan 3andi mushkil f jawab. 3awd t9ad men ba3d. (Erreur: {str(e)})"
+            return f"Sma7 lia, kan 3andi mushkil f jawab. (Erreur: {str(e)})"
 
     def _build_darija_prompt(self, question, detected_lang, retrieved_context=None):
         """Construit le prompt pour GPT en darija"""
@@ -243,92 +314,73 @@ class LLMResponder:
         # Instructions selon la langue
         if detected_lang == "darija_arabic":
             instructions = """
-            ### تعليمات ###
-            - جاوب بالدارجة المغربية بحروف عربية
-            - كن مهني ومفهوم
-            - غير من الوثائق بلا ما تزيد
-            - ركز على السؤال المطروح فقط
-            - إذا وجدت معلومات في الوثائق المرجعية، استخدمها في إجابتك
+        ### تعليمات ###
+        - جاوب بالدارجة المغربية بحروف عربية
+        - كن مهني ومفهوم
+        - استخدم خبرتك في الفلاحة
+        - ركز على السؤال المطروح فقط
+        - إذا وجدت معلومات في الوثائق المرجعية، استخدمها في إجابتك
             """
         elif detected_lang == "darija_latin":
             instructions = """
-            ### Ta3limat ###
-            - Jaweb b darija maghribiya b horouf latinia
-            - Kun professional o mafhum
-            - Ste3mel ghi lwata2i9 bla matzid
-            - Rkez 3la su2al li t9ad ghir
-            - Ila l9iti ma3lomat f documents, ste3melhom f jawab dyalek
+        ### Ta3limat ###
+        - Jaweb b darija maghribiya b horouf latinia
+        - Kun professional o mafhum
+        - Ste3mel khibra dyalek f fla7a
+        - Rkez 3la su2al li t9ad ghir
+        - Ila l9iti ma3lomat f documents, ste3melhom f jawab dyalek
             """
         else:  # french
             instructions = """
-            ### Instructions ###
-            - Répondez en français
-            - Soyez professionnel et accessible
-            - Utilisez juste les fichier
-            - Concentrez-vous uniquement sur la question posée
-            - Si vous trouvez des informations dans les documents de référence, utilisez-les dans votre réponse
+        ### Instructions ###
+        - Répondez en français
+        - Soyez professionnel et accessible
+        - Utilisez votre expertise agricole
+        - Concentrez-vous uniquement sur la question posée
+        - Si vous trouvez des informations dans les documents de référence, utilisez-les dans votre réponse
             """
         
         return f"""{instructions}
-            {context_part}
-            ### Su2al / Question ###
-            {question}
+        {context_part}
+        ### Su2al / Question ###
+        {question}
 
-            ### Jawab / Réponse ###"""
+        ### Jawab / Réponse ###"""
 
-    def generate_response(self, query, retrieved_answer=None):
-        """Génère une réponse en darija via GPT"""
+    def generate_response(self, query, retrieved_answer=None, detected_lang="darija_latin", is_greet=False):
+        """Génère une réponse textuelle contextualisée en darija (latin ou arabe)"""
+        start_time = time.time()
         
-        print(f"[DEBUG] Requête reçue: '{query}'")
-        
-        # Détection prioritaire des salutations
-        if self.is_greeting(query):
-            print("[DEBUG] Salutation détectée!")
-            detected_lang = self.detect_language_advanced(query)
-            print(f"[DEBUG] Langue détectée pour salutation: {detected_lang}")
-            greeting_response = self.get_greeting_by_language(detected_lang)
-            
-            # Mise à jour du contexte
-            self.update_context(query, greeting_response)
-            
-            yield f"data: {json.dumps({'content': greeting_response, 'finished': True, 'language': detected_lang})}\n\n"
+        if is_greet:
+            greeting = self.get_greeting_by_language(detected_lang)
+            self.update_context(query, greeting)
+            yield f"data: {json.dumps({'content': greeting, 'finished': True, 'language': detected_lang})}\n\n"
             return
 
-        # Détection de la langue
-        detected_lang = self.detect_language_advanced(query)
-        print(f"[DEBUG] Langue détectée: {detected_lang}")
-        
-        # Si pas de darija détectée, forcer darija latin
-        if detected_lang == "french":
-            detected_lang = "darija_latin"
-            print("[DEBUG] Langue forcée vers darija_latin")
-        
         try:
-            # Préparation du contexte des documents
+            # Préparation du contexte
             context_docs = None
             if retrieved_answer:
                 if isinstance(retrieved_answer, list):
-                    context_docs = "\n\n".join(retrieved_answer[:3])  # Limiter à 3 documents
+                    context_docs = "\n\n".join(retrieved_answer[:3])
                 else:
                     context_docs = str(retrieved_answer)
-                
-                print(f"[DEBUG] Contexte documentaire trouvé: {len(context_docs) if context_docs else 0} caractères")
-            else:
-                print("[DEBUG] Aucun contexte documentaire fourni")
-            
-            # Appel à GPT avec la requête ORIGINALE pour garder la réponse en darija
+
+            # Appel à GPT pour générer la réponse en darija
             response_text = self.ask_gpt_darija(query, detected_lang, context_docs)
-            
-            # Mise à jour du contexte
+
+            # Mise à jour du contexte conversationnel
             self.update_context(query, response_text)
-            
-            # Formatage HTML
-            formatted_response = self._format_response(response_text)
-            
-            yield f"data: {json.dumps({'content': formatted_response, 'finished': True, 'is_html': True, 'language': detected_lang})}\n\n"
-            
+
+            # Formatage HTML si nécessaire
+            formatted = self._format_response(response_text)
+            duration = time.time() - start_time
+            print(f"[GPT] Réponse générée en {duration:.2f}s")
+
+            yield f"data: {json.dumps({'content': formatted, 'finished': True, 'is_html': True, 'language': detected_lang})}\n\n"
+
         except Exception as e:
-            error_msg = f"Sma7 lia, kan 3andi mushkil. 3awd t9ad men ba3d. (Erreur: {str(e)})"
+            error_msg = f"Sma7 lia, kan 3andi mushkil. (Erreur: {str(e)})"
             yield f"data: {json.dumps({'error': error_msg, 'finished': True, 'language': 'darija_latin'})}\n\n"
 
     def _format_response(self, text):
