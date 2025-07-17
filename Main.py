@@ -8,10 +8,11 @@ from pymongo import MongoClient
 import torch
 from openai import OpenAI
 from dotenv import load_dotenv
+from sentence_transformers import CrossEncoder
+
 
 # Charger les variables d'environnement
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -25,12 +26,12 @@ class Main:
         db_name: str = "embeddings_db",
         collection_name: str = "files",
         faiss_index_path: str = "faiss_index.index",
-        model_name: str = "text-embedding-3-small",  # Modèle OpenAI par défaut
+        model_name: str = "text-embedding-3-large",  # Modèle OpenAI par défaut
         similarity_threshold: float = 0.1,
         use_gpu: bool = True,
         embedding_dimensions: int = 1536,  # Dimensions pour text-embedding-3-small
         force_reindex: bool = False
-    ):
+        ):
         self.client = client 
         self.context = []
         self.index = None
@@ -40,7 +41,7 @@ class Main:
         self.similarity_threshold = similarity_threshold
         self.use_gpu = use_gpu
         self.embedding_dimensions = embedding_dimensions
-
+        
         # Vérifier la clé API OpenAI
         if not os.getenv('OPENAI_API_KEY'):
             raise ValueError("Clé API OpenAI manquante. Vérifiez votre fichier .env")
@@ -50,6 +51,7 @@ class Main:
         self.retriever = self._init_retriever()
         self.llm_responder = LLMResponder()
         self.force_reindex = force_reindex
+        self.reranker = CrossEncoder("BAAI/bge-reranker-base")
         logger.info(f"Système initialisé avec succès - Modèle: {self.model_name}")
 
     def _init_embedding_system(self) -> Embedding:
@@ -60,8 +62,7 @@ class Main:
             faiss_index_path=self.faiss_index_path,
             force_reindex=True,  # Forcer la réindexation lors du changement de modèle
             use_gpu=self.use_gpu,
-            embedding_dimensions=self.embedding_dimensions
-        )
+            embedding_dimensions=self.embedding_dimensions )
     
     def _init_retriever(self) -> Retriever:
         return Retriever(
@@ -101,60 +102,98 @@ class Main:
         )
         return last_doc.get("processing_date") if last_doc else None
     
-    def get_response_for_query(self, query: str) -> str:
-        result = self.process_query(query)
-        return result.get("response", "Désolé, je n'ai pas trouvé de réponse pertinente.")
-
+    
     def process_query(self, query: str, top_k: int = 15) -> Dict:
-        logger.info(f"Traitement de la requête: '{query}' avec modèle {self.model_name}")
+        """Pipeline intelligent : détection langue, salutation, traduction, embeddings"""
+        logger.info(f"[PROCESS] Nouvelle requête: '{query}'")
         
+        # Détection de la langue
+        detected_lang = self.llm_responder.detect_language_advanced(query)
+        detected_lang = "darija_latin"
+        logger.info(f"[LANGUE] Détectée : {detected_lang}")
+
+        # Salutation ?
+        if self.llm_responder.is_greeting(query):
+            logger.info("[SALUTATION] Salutation détectée.")
+            return {
+                "status": "SALUTATION",
+                "query": query,
+                "context": None,
+                "detected_lang": detected_lang,
+                "is_greet": True,
+                "sources": [],
+                "debug_info": {}
+            }
+
+        # Traduction en français pour le système d'embeddings
+        translated_query = self.llm_responder.translate_query_to_french(query)
+        logger.info(f"[TRADUCTION] -> {translated_query}")
+
+        # Recherche vectorielle
         try:
-            search_results = self.retriever.search(query, top_k)
-            
-            print("\n=== Résultats de la recherche ===")
-            print(f"Requête: '{query}'")
-            print(f"Modèle: {self.model_name}")
-            print(f"Nombre de résultats trouvés: {len(search_results)}\n")
-            
-            for i, result in enumerate(search_results, 1):
-                print(f"Résultat #{i}:")
-                print(f"Score: {result['score']:.4f}")
-                print(f"Source: {result['source']}")
-                print(f"Page: {result['page_number']}/{result['total_pages']}")
-                print(f"Extrait: {result['text'][:200]}...\n")
-            
+            search_results = self.retriever.search(translated_query, top_k)
+
+            # Reranking si activé
+            # Reranking si activé
+            if hasattr(self, 'reranker') and self.reranker:
+                # Préparation des paires (query, document)
+                pairs = [(translated_query, doc["text"]) for doc in search_results]
+                
+                # Prédiction des scores
+                scores = self.reranker.predict(pairs)
+
+                # Attribution des scores aux résultats
+                for i, score in enumerate(scores):
+                    search_results[i]["score"] = float(score)
+
+                # Tri par score décroissant
+                search_results = sorted(search_results, key=lambda x: x["score"], reverse=True)
+                
+                logger.info("[RERANKING] Résultats rerankés.")
+
+
             if not search_results:
-                logger.warning("Aucun résultat trouvé")
                 return {
                     "status": "AUCUN_RESULTAT",
-                    "message": "Aucune correspondance trouvée",
-                    "response": "Désolé, aucun résultat trouvé pour votre requête."
+                    "message": "Aucun résultat trouvé",
+                    "response": "Désolé, aucun document pertinent n'a été trouvé.",
+                    "context": [],
+                    "detected_lang": detected_lang,
+                    "is_greet": False,
+                    "sources": [],
+                    "debug_info": {}
                 }
 
             context = [res["text"] for res in search_results]
-            llm_response = self.llm_responder.generate_response(query, context)
-            
+
             return {
                 "status": "SUCCES",
                 "query": query,
-                "response": llm_response,
+                "context": context,
+                "detected_lang": detected_lang,
+                "is_greet": False,
                 "sources": self._format_sources(search_results),
                 "debug_info": {
                     "model_used": self.model_name,
                     "embedding_dimensions": self.embedding_dimensions,
-                    "candidates_processed": len(search_results),
-                    "top_score": search_results[0]["score"] if search_results else 0,
+                    "top_score": search_results[0]['score'],
                     "gpu_used": self.use_gpu and torch.cuda.is_available()
                 }
             }
-            
+
         except Exception as e:
-            logger.error(f"Erreur traitement requête: {str(e)}")
+            logger.error(f"[ERREUR] Recherche échouée: {str(e)}")
             return {
                 "status": "ERREUR",
                 "message": str(e),
-                "response": "Une erreur est survenue lors du traitement."
+                "response": "Une erreur est survenue pendant la recherche.",
+                "context": [],
+                "detected_lang": detected_lang,
+                "is_greet": False,
+                "sources": [],
+                "debug_info": {}
             }
+
 
     def _format_sources(self, results: List[Dict]) -> List[Dict]:
         return [{
@@ -176,8 +215,6 @@ class Main:
             embedding_dimensions=self.embedding_dimensions
         )
         logger.info("Réindexage terminé")
-
-
 
     def close(self):
         self.embedding_system.close()
