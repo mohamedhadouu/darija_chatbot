@@ -24,21 +24,31 @@ L’assistant repose sur une architecture **RAG** (Retrieval-Augmented Generatio
 ## 🧱 Architecture Technique
 
 ```
-Utilisateur (voix/texte)
+Utilisateur (voix ou texte)
         ↓
 [Interface Web HTML/CSS/JS]
         ↓
-[Flask Backend Python]
+[Backend Flask (Python)]
         ↓
-Whisper STT —→ Vectorisation (Embeddings)
-                      ↓
-       FAISS + MongoDB (Recherche contextuelle)
-                      ↓
-GPT-4 (Génération de réponse contextuelle)
-                      ↓
-                OpenAI TTS
-                      ↓
-       Réponse vocale + affichée
+[Whisper STT (si audio)]
+        ↓
+[Détection de la langue + Filtrage de salutation]
+        ├──▶ [Réponse de salutation directe]
+        ↓
+[Traduction + Reformulation de la requête → français (via GPT)]
+        ↓
+[Vectorisation → text-embedding-3-large]
+        ↓
+[Recherche contextuelle (FAISS + MongoDB)]
+        ↓
+[Re-ranking des résultats (via GPT ou BGE-reranker)]
+        ↓
+[Génération de réponse avec GPT-4 (Prompt multilingue)]
+        ↓
+[OpenAI TTS (Synthèse vocale en darija/français)]
+        ↓
+[Réponse vocale jouée + Texte affiché sur l’interface]
+
 ```
 
 ---
