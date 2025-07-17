@@ -1,5 +1,6 @@
 import os
 import re
+import faiss  # Obligatoire pour read_index, write_index, IndexFlatIP
 import hashlib
 import logging
 import torch
@@ -33,7 +34,7 @@ class Embedding:
     def __init__(
         self,
         directory: str = "Source Files",
-        model_name: str = "text-embedding-3-small",  # Modèle OpenAI
+        model_name: str = "text-embedding-3-large",  # Modèle OpenAI
         chunk_size: int = 150,
         mongo_uri: str = "mongodb://localhost:27017/",
         db_name: str = "embeddings_db",
@@ -82,22 +83,16 @@ class Embedding:
         logger.info(f"Configuration initialisée - Modèle: {self.model_name}, Dimensions: {self.dimension}")
 
     def _init_faiss_index(self):
+        """Initialise FAISS sur CPU uniquement"""
         if os.path.exists(self.faiss_index_path):
-            logger.info("Chargement de l'index FAISS existant")
+            print("📥 Chargement de l'index FAISS existant")
             index = faiss.read_index(self.faiss_index_path)
         else:
-            logger.info(f"Création d'un nouvel index FAISS avec {self.dimension} dimensions")
-            index = faiss.IndexFlatIP(self.dimension)  # Produit scalaire pour similarité cosinus
+            print(f"🆕 Création d'un nouvel index FAISS avec {self.dimension} dimensions")
+            index = faiss.IndexFlatIP(self.dimension)
             faiss.write_index(index, self.faiss_index_path)
-        
-        # Configuration de FAISS pour utiliser le GPU si disponible et demandé
-        if self.use_gpu and torch.cuda.is_available():
-            try:
-                res = faiss.StandardGpuResources()
-                index = faiss.index_cpu_to_gpu(res, 0, index)
-                logger.info("FAISS configuré pour utiliser le GPU")
-            except Exception as e:
-                logger.warning(f"Impossible d'utiliser le GPU pour FAISS: {str(e)}")
+
+        # ❌ PAS DE GPU SUR WINDOWS → NE RIEN FAIRE ICI
         return index
 
     def _file_hash(self, file_path: str) -> str:
@@ -173,6 +168,29 @@ class Embedding:
             logger.error(f"Erreur lors de l'extraction du texte de l'image {file_path} : {e}")
         return ""
 
+    def reindex_all(self):
+        """Réindexe tous les fichiers (FAISS + MongoDB)"""
+        logger.info("Réindexation complète...")
+
+        # Supprimer anciens documents
+        self.collection.delete_many({})
+        
+        # Supprimer index FAISS
+        self.index.reset()
+        if os.path.exists(self.faiss_index_path):
+            os.remove(self.faiss_index_path)
+        
+        # Recréer un index vide
+        self.index = self._init_faiss_index()
+
+        # Traiter les fichiers à nouveau
+        self._process_existing_files()
+
+        # Sauvegarder FAISS
+        faiss.write_index(self.index, self.faiss_index_path)
+
+        logger.info("Réindexation terminée.")
+
     def _extract_pdf(self, file_path: str) -> List[str]:
         """Extraction texte PDF avec retour d'une liste de pages"""
         pages_text = []
@@ -204,36 +222,48 @@ class Embedding:
         """Extraction texte PowerPoint par slide"""
         prs = Presentation(file_path)
         slides_text = []
-        
+
         for slide in prs.slides:
             slide_content = []
-            
+
             for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text.strip():
-                    slide_content.append(shape.text.strip())
-                
-                if shape.has_table:
-                    table = shape.table
-                    for row in table.rows:
-                        for cell in row.cells:
-                            if cell.text.strip():
-                                slide_content.append(cell.text.strip())
-                
-                if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-                    for sub_shape in shape.shapes:
-                        if hasattr(sub_shape, "text") and sub_shape.text.strip():
-                            slide_content.append(sub_shape.text.strip())
-            
-            if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
-                notes_text = slide.notes_slide.notes_text_frame.text.strip()
-                if notes_text:
-                    slide_content.append(notes_text)
-            
+                # Texte direct de la forme
+                text = getattr(shape, "text", None)
+                if text and text.strip():
+                    slide_content.append(text.strip())
+
+                # Tableaux dans les formes
+                if hasattr(shape, "has_table") and shape.has_table:
+                    table = getattr(shape, "table", None)
+                    if table:
+                        for row in table.rows:
+                            for cell in row.cells:
+                                cell_text = getattr(cell, "text", "")
+                                if cell_text.strip():
+                                    slide_content.append(cell_text.strip())
+
+                # Formes groupées (sous-formes)
+                if hasattr(shape, "shape_type") and shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                    if hasattr(shape, "shapes"): 
+                        for sub_shape in shape.shapes: # type: ignore[attr-defined]
+                            sub_text = getattr(sub_shape, "text", None)
+                            if sub_text and sub_text.strip():
+                                slide_content.append(sub_text.strip())
+
+            # Notes de la slide
+            if hasattr(slide, "has_notes_slide") and slide.has_notes_slide:
+                notes_slide = getattr(slide, "notes_slide", None)
+                if notes_slide and hasattr(notes_slide, "notes_text_frame"):
+                    notes_text = getattr(notes_slide.notes_text_frame, "text", "")
+                    if notes_text.strip():
+                        slide_content.append(notes_text.strip())
+
+            # Ajout du contenu final de la slide
             if slide_content:
                 slides_text.append(" ".join(slide_content))
-        
+
         return slides_text
-    
+
     def _extract_word(self, file_path: str) -> List[str]:
         """Extraction texte Word"""
         doc = WordDocument(file_path)
@@ -245,8 +275,24 @@ class Embedding:
         return [full_text]
 
     def _chunk_text(self, text: str) -> List[str]:
-        """Retourne le texte tel quel"""
-        return [text]
+        max_chunk_size = self.chunk_size  # ex: 150 tokens ≈ 500-600 caractères
+        sentences = re.split(r'(?<=[.!?]) +', text)
+
+        chunks = []
+        current_chunk = ""
+
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) <= max_chunk_size:
+                current_chunk += " " + sentence
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence
+
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+
+        return chunks
 
     def _generate_embeddings(self, chunks: List[str]) -> np.ndarray:
         """Génération des embeddings avec l'API OpenAI"""
