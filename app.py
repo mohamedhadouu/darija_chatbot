@@ -61,13 +61,13 @@ def init_system():
         # Initialiser le système principal avec le nouveau modèle
         main_system = Main(
             client=client,
-            model_name="text-embedding-3-small",  # Nouveau modèle
+            model_name="text-embedding-3-large",  # Nouveau modèle
             embedding_dimensions=1536,            # Nouvelles dimensions
             force_reindex=False         # Forcer la réindexation pour la migration
         )
 
         logger.info("Système initialisé avec succès!")
-        logger.info(f"Modèle d'embeddings: text-embedding-3-small (1536D)")
+        logger.info(f"Modèle d'embeddings: text-embedding-3-large (1536D)")
         logger.info("Configuration: Transcription en français/darija latine pour meilleure compatibilité LLM")
         return True
     except Exception as e:
@@ -119,31 +119,6 @@ def normalize_darija_for_tts(text):
     normalized_text = ' '.join(normalized_text.split())
     
     return normalized_text
-
-def enhance_darija_transcription(text):
-    """
-    Améliore la transcription darija avec corrections courantes
-    """
-    if not text:
-        return text
-    
-    # Corrections darija courantes
-    corrections = {
-        'wach': 'wach', 'chkoun': 'chkoun', 'fin': 'fin', 'kifach': 'kifach',
-        'bghit': 'bghit', 'kayn': 'kayn', 'makainch': 'makainch',
-        'bezaf': 'bezaf', 'chwiya': 'chwiya', 'mzyan': 'mzyan',
-        'daba': 'daba', 'ghda': 'ghda', 'salam': 'salam alikom',
-        'hada': 'hada', 'hadik': 'hadik', 'ach': 'ach'
-    }
-    
-    processed_text = text.lower()
-    
-    for wrong, correct in corrections.items():
-        import re
-        pattern = r'\b' + re.escape(wrong.lower()) + r'\b'
-        processed_text = re.sub(pattern, correct, processed_text)
-    
-    return ' '.join(processed_text.split())
 
 def transcribe_audio_darija_latin(audio_path):
     with open(audio_path, "rb") as f:
@@ -237,7 +212,7 @@ def health_check():
                 health["openai_api_status"] = f"error: {str(e)}"
 
             # Informations supplémentaires pour la migration
-            health["embedding_model"] = "text-embedding-3-small"
+            health["embedding_model"] = "text-embedding-3-large"
             health["embedding_dimensions"] = 1536
             health["transcription_mode"] = "openai_whisper_api"
             health["migration_status"] = "completed"
@@ -264,18 +239,19 @@ def chat():
         if not main_system:
             return jsonify({'error': 'Système non initialisé'}), 500
         
-        logger.info(f"Requête reçue: {query}")
+        logger.info(f"[REÇU] {query}")
         
-        # Traitement de la requête avec le nouveau système d'embeddings
+        # Traitement initial de la requête (détection, traduction, embedding…)
         result = main_system.process_query(query)
         
-        # Génération de la réponse via LLM
+        # Génération de la réponse finale via LLM
         response_generator = main_system.llm_responder.generate_response(
             query, 
-            result.get('response', [])
+            result.get('context'),
+            result.get('detected_lang',"darija_lain"),
+            result.get('is_greet', False)
         )
-        
-        # Récupération de la réponse complète
+
         full_response = ""
         for chunk in response_generator:
             if chunk.startswith("data: "):
@@ -288,10 +264,10 @@ def chat():
             'response': full_response,
             'sources': result.get('sources', []),
             'debug_info': result.get('debug_info', {}),
-            'embedding_model': 'text-embedding-3-small',  # Ajout de l'info du modèle
+            'embedding_model': 'text-embedding-3-large',
             'timestamp': datetime.now().isoformat()
         })
-        
+
     except Exception as e:
         logger.error(f"Erreur dans /chat: {e}")
         return jsonify({'error': str(e)}), 500
@@ -353,7 +329,7 @@ def upload_document():
                 'original_filename': doc_file.filename,
                 'saved_filename': safe_filename,
                 'embedding_count': new_count,
-                'embedding_model': 'text-embedding-3-small',
+                'embedding_model': 'text-embedding-3-large',
                 'processing_time': f"{wait_time} secondes",
                 'timestamp': datetime.now().isoformat()
             })
@@ -389,7 +365,7 @@ def check_processing_status():
             'embedding_count': current_count,
             'last_processed': last_doc.get("processing_date") if last_doc else None,
             'last_filename': last_doc.get("file_path") if last_doc else None,
-            'embedding_model': last_doc.get("model_name", "text-embedding-3-small") if last_doc else "text-embedding-3-small",
+            'embedding_model': last_doc.get("model_name", "text-embedding-3-large") if last_doc else "text-embedding-3-large",
             'timestamp': datetime.now().isoformat()
         })
         
@@ -420,7 +396,7 @@ def list_documents():
         return jsonify({
             'count': len(documents),
             'documents': documents,
-            'embedding_model': 'text-embedding-3-small',
+            'embedding_model': 'text-embedding-3-large',
             'timestamp': datetime.now().isoformat()
         })
         
@@ -432,16 +408,16 @@ def list_documents():
 def reindex():
     """Force un réindexage complet avec le nouveau modèle"""
     try:
-        logger.info("Démarrage du réindexage avec text-embedding-3-small...")
+        logger.info("Démarrage du réindexage avec text-embedding-3-large...")
         main_system.reindex_all()
         
         new_count = main_system.embedding_system.collection.count_documents({})
         
         return jsonify({
             'status': 'success',
-            'message': 'Réindexage terminé avec text-embedding-3-small',
+            'message': 'Réindexage terminé avec text-embedding-3-large',
             'embedding_count': new_count,
-            'embedding_model': 'text-embedding-3-small',
+            'embedding_model': 'text-embedding-3-large',
             'timestamp': datetime.now().isoformat()
         })
         
@@ -502,7 +478,7 @@ def upload_audio():
         return jsonify({
             'response': full_response,
             'sources': query_result.get('sources', []),
-            'embedding_model': 'text-embedding-3-small',
+            'embedding_model': 'text-embedding-3-large',
             'timestamp': datetime.now().isoformat(),
             'detected_language': "ar",
             'transcription_method': "openai_whisper"
@@ -527,11 +503,12 @@ def text_to_speech():
         normalized_text = normalize_darija_for_tts(text)
 
         logger.info(f"TTS darija: '{text}' -> '{normalized_text}'")
-
+        
         # 🔊 Synthèse vocale avec OpenAI
         response = main_system.client.audio.speech.create(
-            model="tts-1",
-            voice="nova",  # onyx, echo, fable, etc.
+            model="tts-1-hd",
+            voice="echo",  # echo, nova, onyx, shimmer, fable, etc.
+            speed=0.9, 
             input=normalized_text
         )
 
@@ -593,41 +570,13 @@ def record_audio():
             'recording_url': f'/audio/{recording_filename}',
             'recording_filename': recording_filename,
             'transcription_method': 'openai_whisper',
-            'embedding_model': 'text-embedding-3-small',
+            'embedding_model': 'text-embedding-3-large',
             'detected_language': 'ar',
             'timestamp': datetime.now().isoformat()
         })
 
     except Exception as e:
         logger.error(f"Erreur dans /record_audio: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/stream_chat', methods=['POST'])
-def stream_chat():
-    """Endpoint pour le streaming de réponses"""
-    try:
-        data = request.get_json()
-        query = data.get('message', '').strip()
-        
-        if not query:
-            return jsonify({'error': 'Message vide'}), 400
-        
-        def generate():
-            try:
-                # Recherche de contexte avec le nouveau système d'embeddings
-                result = main_system.process_query(query)
-                
-                # Génération streaming
-                for chunk in main_system.llm_responder.generate_response(query, result.get('response', [])):
-                    yield chunk
-                    
-            except Exception as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        
-        return Response(generate(), mimetype='text/plain')
-        
-    except Exception as e:
-        logger.error(f"Erreur dans /stream_chat: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/cleanup')
@@ -747,7 +696,7 @@ def create_template():
             <div class="message bot-message">
                 <div class="message-controls">
                     <div class="tts-controls">
-                        <button class="small play-btn" onclick="playTTS(this, \`Salam alikom! Ana msa3dek f l9adaya dial zra3a. Kifach ymkn li nsa3dek?\`)">▶️</button> # type: ignore
+                        <button class="small play-btn" onclick="playTTS(this, \`Salam alikom! Ana msa3dek f l9adaya dial zra3a. Kifach ymkn li nsa3dek?\`)">▶️</button> 
                     </div>
                 </div>
                 <strong>Assistant:</strong> Salam alikom! Ana msa3dek f l9adaya dial zra3a. Kifach ymkn li nsa3dek?
